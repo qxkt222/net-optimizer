@@ -1,0 +1,12 @@
+
+Idx     Met         MTU          状态                名称
+---  ----------  ----------  ------------  ---------------------------
+  1          75  4294967295  connected     Loopback Pseudo-Interface 1
+ 14          25        1500  disconnected  WLAN
+ 18          65        1500  disconnected  蓝牙网络连接
+  2          25        1500  connected     以太网
+ 41        5000        1500  connected     vEthernet (Default Switch)
+ 13          25        1500  disconnected  本地连接* 1
+  7          25        1500  disconnected  本地连接* 2
+ 23           1        1500  connected     Example VPN
+
