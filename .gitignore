@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# 运行期状态（用户数据，不入库）
+log-*.log
+history.json
+dev.json
+dns-backup.json
