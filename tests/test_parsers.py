@@ -88,7 +88,7 @@ SYNTHETIC_ZH_WLAN_CONNECTED = """系统上有 1 个接口:
     GUID                   : 00000000-0000-0000-0000-000000000001
     物理地址       : 02:00:00:00:00:05
     SSID                   : MyHomeNet
-    BSSID                  : 02:00:00:00:00:0B
+    BSSID                  : 02:00:00:00:00:0F
     网络类型               : 基础结构
     无线电类型             : 802.11ax
     状态                  : 已连接
@@ -105,7 +105,7 @@ SYNTHETIC_EN_WLAN_CONNECTED = """There is 1 interface on the system:
     Name                   : Wi-Fi
     State                  : connected
     SSID                   : CafeNet
-    BSSID                  : 02:00:00:00:00:0C
+    BSSID                  : 02:00:00:00:00:10
     Signal                 : 41%
     Channel                : 6
     Receive rate (Mbps)    : 72.2
@@ -121,11 +121,11 @@ SYNTHETIC_WLAN_NETWORKS = """接口名称 : WLAN
 SSID 1 : Neighbor-24
     网络类型             : 基础结构
     信道                 : 6
-    BSSID 1                : 02:00:00:00:00:0D
+    BSSID 1                : 02:00:00:00:00:11
          信号             : 40%
          频段             : 2.4 GHz
          信道             : 6
-    BSSID 2                : 02:00:00:00:00:0E
+    BSSID 2                : 02:00:00:00:00:12
          信号             : 30%
          频段             : 2.4 GHz
          信道             : 6
@@ -133,7 +133,7 @@ SSID 1 : Neighbor-24
 SSID 2 : Fast-5G
     网络类型             : 基础结构
     信道                 : 36
-    BSSID 1                : 02:00:00:00:00:0F
+    BSSID 1                : 02:00:00:00:00:13
          信号             : 70%
          频段             : 5 GHz
          信道             : 36
