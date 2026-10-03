@@ -108,3 +108,8 @@ python -m pytest tests -q    :: 只跑单元测试
 
 加新命令时按这个结构走：解析逻辑进 `parsers.py` 并补单测 → 探测进 `probes.py`
 → 展示进 `render_*` 纯函数 → 最后在 `cmd_*` 里编排。
+
+## 许可证
+
+[MIT](LICENSE)
+
