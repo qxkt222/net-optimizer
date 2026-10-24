@@ -19,6 +19,7 @@ from __future__ import annotations
 import time
 import urllib.request
 from dataclasses import dataclass
+from typing import Protocol
 
 from netopt import parsers, platform, probes, state, ui
 from netopt.models import ChannelOccupancy, DnsConfig, MtuResult, PingStat, WlanInfo
@@ -268,13 +269,13 @@ def render_wlan_status(info: WlanInfo, res: CmdResult) -> list[str]:
     混为一谈。
     """
     if not res.ok:
-        lines = [ui.red(f"  无法读取 WiFi 状态: {_failure_reason(res)}")]
+        lines: list[str] = [ui.red(f"  无法读取 WiFi 状态: {_failure_reason(res)}")]
         detail = _first_meaningful_line(res.out)
         if detail:
             lines.append(f"  命令输出: {detail}")
         return lines
     if info.connected:
-        lines: list[str] = []
+        lines = []
         if info.ssid:
             lines.append(f"  SSID: {info.ssid}")
         if info.band:
@@ -436,7 +437,8 @@ def _download_sample(name: str, url: str, max_seconds: float = 15.0) -> SpeedSam
     """下载测速：成功返回 Mbps，失败返回**原因**（D10：单源失败不拖垮整体）。"""
     try:
         req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        # 测速源是模块内写死的 https 常量，不接受外部 scheme
+        with urllib.request.urlopen(req, timeout=10) as resp:  # nosec B310
             started = time.perf_counter()
             total = 0
             while True:
@@ -465,7 +467,8 @@ def _upload_sample(name: str, url: str, max_seconds: float = 15.0) -> SpeedSampl
             headers={"User-Agent": _USER_AGENT},
         )
         started = time.perf_counter()
-        with urllib.request.urlopen(req, timeout=max_seconds) as resp:
+        # 同上：地址来自模块内常量，不是用户输入
+        with urllib.request.urlopen(req, timeout=max_seconds) as resp:  # nosec B310
             resp.read()
         elapsed = time.perf_counter() - started
         if elapsed <= 0:
@@ -665,9 +668,15 @@ def cmd_wifi(run: Runner | None = None) -> None:
     state.log("wifi 检查完成")
 
 
+class _StopSignal(Protocol):
+    """采样循环只依赖这一个方法；``threading.Event`` 与测试桩都满足它。"""
+
+    def is_set(self) -> bool: ...
+
+
 def cmd_monitor(
     count: int = 60,
-    stop_event: object | None = None,
+    stop_event: _StopSignal | None = None,
     run: Runner | None = None,
 ) -> None:
     """百度延迟采样（每秒 1 次，可被 ``stop_event`` 提前叫停）。"""
@@ -677,7 +686,7 @@ def cmd_monitor(
     loss = 0
     try:
         for i in range(count):
-            if stop_event is not None and stop_event.is_set():  # type: ignore[attr-defined]
+            if stop_event is not None and stop_event.is_set():
                 print(ui.yellow("\n  已手动停止"))
                 break
             started = time.perf_counter()

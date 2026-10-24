@@ -50,7 +50,7 @@ Persistent Routes:
 
 # SYNTHETIC：英文 netsh interface ipv4 show dnsservers
 SYNTHETIC_EN_NS_DNS = """Configuration for interface "Ethernet"
-    DNS servers configured through DHCP:  192.168.1.1
+    DNS servers configured through DHCP:  192.0.2.1
     Register with which suffix:           Primary only
 
 Configuration for interface "Wi-Fi"
@@ -70,11 +70,11 @@ Windows IP Configuration
 Ethernet adapter Ethernet:
 
    Connection-specific DNS Suffix  . :
-   IPv4 Address. . . . . . . . . . . : 192.168.1.50
+   IPv4 Address. . . . . . . . . . . : 192.0.2.50
    Subnet Mask . . . . . . . . . . . : 255.255.255.0
-   Default Gateway . . . . . . . . . : 192.168.1.1
+   Default Gateway . . . . . . . . . : 192.0.2.1
    DHCP Enabled. . . . . . . . . . . : Yes
-   DNS Servers . . . . . . . . . . . : 192.168.1.1
+   DNS Servers . . . . . . . . . . . : 192.0.2.1
                                        2001:4860:4860::8888
    NetBIOS over Tcpip. . . . . . . . : Enabled
 """
@@ -275,7 +275,7 @@ def test_netsh_dnsservers_english_synthetic():
     cfgs = parse_netsh_dnsservers(SYNTHETIC_EN_NS_DNS)
     by_name = {c.interface: c for c in cfgs}
     assert by_name["Ethernet"].source == "dhcp"
-    assert by_name["Ethernet"].servers == ["192.168.1.1"]
+    assert by_name["Ethernet"].servers == ["192.0.2.1"]
     assert by_name["Wi-Fi"].source == "static"
     assert by_name["Wi-Fi"].servers == ["8.8.8.8", "8.8.4.4"]
     assert by_name["Loopback"].source == "none"
@@ -308,7 +308,7 @@ def test_ipconfig_dns_english_synthetic():
     cfgs = parse_ipconfig_dns(SYNTHETIC_EN_IPCONFIG)
     assert len(cfgs) == 1
     assert cfgs[0].interface == "Ethernet"
-    assert cfgs[0].servers == ["192.168.1.1", "2001:4860:4860::8888"]
+    assert cfgs[0].servers == ["192.0.2.1", "2001:4860:4860::8888"]
     assert cfgs[0].source == "dhcp"  # DHCP Enabled: Yes
 
 
@@ -322,7 +322,7 @@ def test_ipconfig_addresses_real_sample():
 
 
 def test_ipconfig_addresses_english_synthetic():
-    assert parse_ipconfig_addresses(SYNTHETIC_EN_IPCONFIG) == {"Ethernet": "192.168.1.50"}
+    assert parse_ipconfig_addresses(SYNTHETIC_EN_IPCONFIG) == {"Ethernet": "192.0.2.50"}
 
 
 # ---------------------------------------------------------------------------

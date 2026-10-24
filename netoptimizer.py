@@ -8,17 +8,47 @@
 命名冲突提醒：项目根目录还有**旧的** ``diag.py`` / ``fix.py`` / ``health.py``，
 本模块一律用显式包路径 ``from netopt import ...``，绝不裸 ``import diag``。
 
-``fix`` 额外支持 ``--restore``：``python netoptimizer.py fix dns --restore``
-→ ``netopt.fix.cmd_fix("dns", restore=True)``（把 DNS 还原成 ``fix dns`` 修改前的原值）。
+诊断 / 健康 / 探测类命令已转交 v2 CLI（``netopt.cli``）：``status``、
+``health``、``ping``、``dns``、``http``、``speed``、``trace``、``wifi``、
+``full``、``fix``、``undo``、``watch``、``monitor``、``auto``。``fix`` 支持
+``--dry-run`` / ``--json``，``fix dns --restore`` 等价于 ``undo last``
+（只回滚 dns 类型）；``undo [ID|last]`` 按变更日志回滚。``auto`` 的权限门
+由 v2 CLI 统一处理（非管理员返回退出码 3，不再自动提权）。
 """
 
 import contextlib
 import sys
 
-from netopt import VERSION, diag, fix, health, platform, state, ui
+from netopt import VERSION, cli, platform, state, ui
 
-# 需要管理员权限的命令
-NEED_ADMIN = {"fix", "auto", "dev"}
+# 需要管理员权限、且由兼容壳自动提权的命令。
+# v2 CLI 命令统一返回退出码 3 并提示用户以管理员身份重开终端，
+# 兼容壳**不再**自动提权（T4.7）；``auto`` 已迁移到 v2 CLI，故不在此列。
+NEED_ADMIN = {"dev"}
+
+#: 已迁移到 v2 CLI 的命令：参数解析、探测、渲染与退出码统一由
+#: :mod:`netopt.cli` 负责，兼容壳只做透明转交。
+V2_COMMANDS = frozenset(
+    {
+        "status",
+        "health",
+        "ping",
+        "dns",
+        "http",
+        "speed",
+        "trace",
+        "wifi",
+        "full",
+        "fix",
+        "undo",
+        "watch",
+        "monitor",
+        "auto",
+    }
+)
+
+#: v2 CLI 的全局选项；允许写在命令后面（``status --json``）。
+_V2_GLOBAL_FLAGS = frozenset({"--json", "--no-json", "--no-color"})
 
 HELP = f"""net-optimizer v{VERSION} — Windows 网络诊断与一键优化工具
 
@@ -28,7 +58,7 @@ HELP = f"""net-optimizer v{VERSION} — Windows 网络诊断与一键优化工�
   ─────────────────────────────────────────────────────────
   status                  快速诊断 (Ping+DNS+HTTP+MTU)
   full                    全面诊断 (含带宽/路由/WiFi)
-  auto                    一键优化 (诊断→自动修复全部, 需管理员)
+  auto                    一键优化 (诊断→自动修复→复测, 需管理员)
   ping [目标]             延迟测试 (默认百度)
   dns                     DNS 解析基准 (7 个服务器)
   http                    HTTP 延迟测试 (4 个站点)
@@ -36,8 +66,11 @@ HELP = f"""net-optimizer v{VERSION} — Windows 网络诊断与一键优化工�
   trace [目标]            路由追踪 (默认百度)
   wifi                    WiFi 信号/信道/频段
   fix dns/tcp/power       自动修复 (需管理员; dns 只改默认路由网卡, 改前先备份)
+  fix --dry-run           只显示修复计划, 不执行任何修改
   fix dns --restore       把 DNS 还原成修改前的原值 (需管理员)
-  monitor [次数]          百度延迟采样 (默认 60 次)
+  undo [ID|last]          回滚最近一次或指定变更 (需管理员)
+  monitor                 持续采样 (每秒 1 次, 默认 60 次)
+  watch [--count N]       常驻采样 (默认每 5 秒, 写 metrics.jsonl)
   dev on/off              开发者模式 (需管理员, 回显原始命令)
   health                  健康评分+优化建议
   admin                   以管理员身份重启本程序
@@ -87,6 +120,19 @@ def cmd_admin() -> None:
         print(ui.red("提权被取消或失败"))
 
 
+def _run_v2(argv: list[str]) -> int:
+    """把 :data:`V2_COMMANDS` 里的命令转交 v2 ``netopt.cli``。
+
+    typer 的全局选项必须写在命令之前，但兼容壳的用户习惯
+    ``python netoptimizer.py status --json``；这里把已知全局选项提到前面，
+    其余参数原样保留。子命令自己的 ``--json`` 提到全局后行为一致
+    （stdout 仍然只有 JSON）。
+    """
+    options = [arg for arg in argv[1:] if arg in _V2_GLOBAL_FLAGS]
+    rest = [arg for arg in argv[1:] if arg not in _V2_GLOBAL_FLAGS]
+    return cli.main([*options, argv[0], *rest])
+
+
 def main(argv: list[str]) -> int:
     state.load_dev()
     argv = [a for a in argv if a != "--wait"]  # --wait 由 __main__ 处理
@@ -108,41 +154,15 @@ def main(argv: list[str]) -> int:
     state.log(f"运行: {' '.join(argv)}")
 
     try:
-        if cmd == "status":
-            diag.cmd_status()
-        elif cmd == "full":
-            diag.cmd_full()
-        elif cmd == "auto":
-            fix.cmd_auto()
-        elif cmd == "ping":
-            diag.cmd_ping(args[0] if args else None)
-        elif cmd == "dns":
-            diag.cmd_dns()
-        elif cmd == "http":
-            diag.cmd_http()
-        elif cmd == "speed":
-            diag.cmd_speed()
-        elif cmd == "trace":
-            diag.cmd_trace(args[0] if args else None)
-        elif cmd == "wifi":
-            diag.cmd_wifi()
-        elif cmd == "fix":
-            # fix [dns|tcp|power|all] [--restore]；--restore 只对 dns 有效
-            restore = "--restore" in args
-            rest = [a for a in args if a != "--restore"]
-            fix.cmd_fix(rest[0] if rest else "all", restore=restore)
-        elif cmd == "monitor":
-            count = 60
-            if args and args[0].isdigit():
-                count = min(max(int(args[0]), 5), 600)
-            diag.cmd_monitor(count)
+        if cmd in V2_COMMANDS:
+            # v2 垂直切片：探测 → Report 统一交给 netopt.cli
+            # （含退出码与 --json 输出）。
+            return _run_v2(argv)
         elif cmd == "dev":
             if args and args[0].lower() in ("on", "off"):
                 cmd_dev(args[0].lower())
             else:
                 print("用法: dev on|off")
-        elif cmd == "health":
-            health.cmd_health()
         elif cmd == "admin":
             cmd_admin()
         elif cmd == "clear":

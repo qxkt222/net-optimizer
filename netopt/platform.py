@@ -15,7 +15,7 @@ from __future__ import annotations
 import contextlib
 import ctypes
 import os
-import subprocess
+import subprocess  # nosec B404 —— 本模块的职责就是调用系统命令
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -69,7 +69,8 @@ def run(argv: list[str], timeout: float = 30.0) -> CmdResult:
     """
     argv = [str(a) for a in argv]
     try:
-        proc = subprocess.run(
+        # argv 由本包内部常量拼出、以 list 传入（不经过 shell），无注入面
+        proc = subprocess.run(  # nosec B603
             argv,
             capture_output=True,
             timeout=timeout,
@@ -127,7 +128,8 @@ def _shell_execute(operation: str, file: str, params: str, cwd: str) -> int:
     单独成函数是为了给测试一个注入点：测试里替换它即可验证提权参数，
     **不会真的弹 UAC / 启动进程**。
     """
-    return ctypes.windll.shell32.ShellExecuteW(None, operation, file, params, cwd, 1)
+    # ShellExecuteW 的静态类型是 Any（ctypes 动态属性）；运行时返回 HINSTANCE 整数
+    return int(ctypes.windll.shell32.ShellExecuteW(None, operation, file, params, cwd, 1))
 
 
 def elevate(args: list[str], *, exe: str | None = None) -> bool:
@@ -167,8 +169,12 @@ def init_console() -> None:
             kernel32.SetConsoleCP(65001)
 
     for stream in (sys.stdout, sys.stderr):
-        with contextlib.suppress(Exception):
-            stream.reconfigure(encoding="utf-8", errors="replace")
+        # sys.stdout 的静态类型是 TextIO（没有 reconfigure），但 CPython 运行时
+        # 给的是 TextIOWrapper；用 getattr 既保住鸭子类型，也不必写类型忽略注释。
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            with contextlib.suppress(Exception):
+                reconfigure(encoding="utf-8", errors="replace")
 
 
 # 旧 netlib.py 在 import 时就初始化控制台，保持同样的行为。

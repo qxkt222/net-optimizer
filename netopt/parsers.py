@@ -16,6 +16,7 @@ interfaces`` 的列头是中文、状态列却是英文小写 ``connected``）�
 from __future__ import annotations
 
 import re
+from typing import TypedDict
 
 from .models import ChannelOccupancy, DnsConfig, Gateway, Interface, PingStat, WlanInfo
 
@@ -178,7 +179,8 @@ def parse_route_default(text: str) -> Gateway | None:
         m = _ROUTE_ROW_RE.match(line)
         if m is None:
             continue
-        if m.group("dest") != "0.0.0.0" or m.group("mask") != "0.0.0.0":
+        # 这里的 0.0.0.0 是路由表默认路由字面量，不是监听地址（误报）
+        if m.group("dest") != "0.0.0.0" or m.group("mask") != "0.0.0.0":  # nosec B104
             continue
         metric = int(m.group("metric"))
         if best is None or metric < best.metric:
@@ -313,6 +315,18 @@ def _value_after(line: str, m: re.Match[str]) -> str:
     return rest.strip()
 
 
+class _NetshDnsBlock(TypedDict):
+    """``netsh show dnsservers`` 中单个接口块的中间结构。
+
+    ``source`` 为 None 表示该块还没有出现过 static/dhcp 判定行 —— 与
+    「明确是 none」区分开，最后据此丢弃非 netsh 正常输出的块。
+    """
+
+    name: str
+    servers: list[str]
+    source: str | None
+
+
 def parse_netsh_dnsservers(text: str) -> list[DnsConfig]:
     """解析 ``netsh interface ipv4 show dnsservers``，每个接口一条。
 
@@ -320,38 +334,39 @@ def parse_netsh_dnsservers(text: str) -> list[DnsConfig]:
     （对应行为“无/None”或没有任何服务器，如本机的 Example VPN、WLAN 等）。
     服务器值可能是裸地址续行（``114.114.114.114`` 下一行再跟一个地址）。
     """
-    out: list[DnsConfig] = []
-    cur: dict[str, object] | None = None
+    out: list[_NetshDnsBlock] = []
+    cur: _NetshDnsBlock | None = None
     for line in text.splitlines():
         hdr = _NS_IFACE_RE.match(line)
         if hdr:
             name = (hdr.group("cn") or hdr.group("en") or "").strip()
             cur = {"name": name, "servers": [], "source": None}
-            out.append(cur)  # type: ignore[arg-type]
+            out.append(cur)
             continue
         if cur is None:
             continue
         static_m = _NS_STATIC_RE.search(line)
         dhcp_m = _NS_DHCP_RE.search(line)
-        if static_m or dhcp_m:
-            cur["source"] = "static" if static_m else "dhcp"
-            val = _value_after(line, static_m or dhcp_m)  # type: ignore[arg-type]
-            servers = cur["servers"]
-            assert isinstance(servers, list)
+        # 两个正则互斥；`or` 收窄成非 None 后再取值，避免对 Optional 解引用
+        marker = static_m or dhcp_m
+        if marker is not None:
+            cur["source"] = "static" if static_m is not None else "dhcp"
+            val = _value_after(line, marker)
             for token in re.split(r"[\s,，]+", val):
-                if token and _looks_like_ip(token) and token not in servers:
-                    servers.append(token)
+                if token and _looks_like_ip(token) and token not in cur["servers"]:
+                    cur["servers"].append(token)
             continue
         token = line.strip()
-        if token and _looks_like_ip(token):
-            servers = cur["servers"]
-            assert isinstance(servers, list)
-            if cur["source"] in ("static", "dhcp") and token not in servers:
-                servers.append(token)
+        if (
+            token
+            and _looks_like_ip(token)
+            and cur["source"] in ("static", "dhcp")
+            and token not in cur["servers"]
+        ):
+            cur["servers"].append(token)
     result: list[DnsConfig] = []
     for entry in out:
         servers = entry["servers"]
-        assert isinstance(servers, list)
         source = entry["source"]
         if source is None and not servers:
             # 该块没有 DNS 配置行（非 netsh 正常输出）——不臆造
@@ -360,7 +375,7 @@ def parse_netsh_dnsservers(text: str) -> list[DnsConfig]:
             source = "none"
         result.append(
             DnsConfig(
-                interface=str(entry["name"]),
+                interface=entry["name"],
                 servers=list(servers),
                 source=str(source),
             )
@@ -454,13 +469,30 @@ _WLAN_CONNECTED_STATES = {"connected", "已连接"}
 _WLAN_UNIT_SUFFIX_RE = re.compile(r"\s*[（(]\s*mbps\s*[)）]\s*$", re.IGNORECASE)
 
 
+class _WlanFields(TypedDict, total=False):
+    """``netsh wlan show interfaces`` 抽出的字段集合；缺键表示该行没出现。
+
+    用 ``total=False`` 而非给每个字段塞默认值，是为了保持「没读到就是未知」
+    的语义（模型层同样用 None 表示未知）。
+    """
+
+    interface: str | None
+    state: str | None
+    ssid: str | None
+    signal_pct: int | None
+    channel: int | None
+    band: str | None
+    rx_mbps: float | None
+    tx_mbps: float | None
+
+
 def parse_wlan_interfaces(text: str) -> WlanInfo:
     """解析 ``netsh wlan show interfaces``（中英文键都认）。
 
     坑：``BSSID`` 行是 AP 的 MAC，键必须与 ``SSID`` **精确相等**，
     不能用“包含 SSID”判断（否则会把 MAC 当网络名）。
     """
-    info: dict[str, object] = {}
+    info: _WlanFields = {}
     for raw in text.splitlines():
         kv = _PLAIN_KV_RE.match(raw)
         if kv is None:
@@ -489,14 +521,14 @@ def parse_wlan_interfaces(text: str) -> WlanInfo:
     connected = bool(state) and str(state).strip().lower() in _WLAN_CONNECTED_STATES
     return WlanInfo(
         connected=connected,
-        ssid=info.get("ssid"),  # type: ignore[arg-type]
-        signal_pct=info.get("signal_pct"),  # type: ignore[arg-type]
-        channel=info.get("channel"),  # type: ignore[arg-type]
-        band=info.get("band"),  # type: ignore[arg-type]
-        rx_mbps=info.get("rx_mbps"),  # type: ignore[arg-type]
-        tx_mbps=info.get("tx_mbps"),  # type: ignore[arg-type]
-        state=info.get("state"),  # type: ignore[arg-type]
-        interface=info.get("interface"),  # type: ignore[arg-type]
+        ssid=info.get("ssid"),
+        signal_pct=info.get("signal_pct"),
+        channel=info.get("channel"),
+        band=info.get("band"),
+        rx_mbps=info.get("rx_mbps"),
+        tx_mbps=info.get("tx_mbps"),
+        state=info.get("state"),
+        interface=info.get("interface"),
     )
 
 
@@ -527,6 +559,21 @@ def _band_of(band_text: str | None, channel: int | None) -> str | None:
     return None
 
 
+class _WlanBssBlock(TypedDict):
+    """``BSSID n`` 子块：信道 / 频段可能缺失，缺失时回退到网络级的值。"""
+
+    channel: int | None
+    band: str | None
+
+
+class _WlanNetBlock(TypedDict):
+    """``SSID n`` 网络块：网络级信道 / 频段 + 若干 BSSID 子块。"""
+
+    channel: int | None
+    band: str | None
+    bssids: list[_WlanBssBlock]
+
+
 def parse_wlan_networks(text: str) -> ChannelOccupancy:
     """解析 ``netsh wlan show networks mode=bssid``，统计信道占用。
 
@@ -537,9 +584,9 @@ def parse_wlan_networks(text: str) -> ChannelOccupancy:
     此时输出里没有任何 ``SSID n :`` 行，函数自然返回**空的 ChannelOccupancy**，
     不崩、不造数据。
     """
-    networks: list[dict[str, object]] = []
-    cur_net: dict[str, object] | None = None
-    cur_bss: dict[str, object] | None = None
+    networks: list[_WlanNetBlock] = []
+    cur_net: _WlanNetBlock | None = None
+    cur_bss: _WlanBssBlock | None = None
     for line in text.splitlines():
         if _WLAN_SSID_RE.match(line):
             cur_net = {"channel": None, "band": None, "bssids": []}
@@ -550,28 +597,29 @@ def parse_wlan_networks(text: str) -> ChannelOccupancy:
             if cur_net is None:
                 continue
             cur_bss = {"channel": None, "band": None}
-            bssids = cur_net["bssids"]
-            assert isinstance(bssids, list)
-            bssids.append(cur_bss)
+            cur_net["bssids"].append(cur_bss)
             continue
         m = _WLAN_CH_RE.match(line)
         if m:
-            target = cur_bss if cur_bss is not None else cur_net
-            if target is not None:
-                target["channel"] = int(m.group("ch"))
+            parsed_channel = int(m.group("ch"))
+            # BSSID 子块优先；只有网络级行时才落到 cur_net
+            if cur_bss is not None:
+                cur_bss["channel"] = parsed_channel
+            elif cur_net is not None:
+                cur_net["channel"] = parsed_channel
             continue
         m = _WLAN_BAND_RE.match(line)
         if m:
-            target = cur_bss if cur_bss is not None else cur_net
-            if target is not None:
-                target["band"] = m.group("band").strip()
+            band_text = m.group("band").strip()
+            if cur_bss is not None:
+                cur_bss["band"] = band_text
+            elif cur_net is not None:
+                cur_net["band"] = band_text
     by_band: dict[str, dict[int, int]] = {}
     for net in networks:
         net_ch = net["channel"]
         net_band = net["band"]
-        bssids = net["bssids"]
-        assert isinstance(bssids, list)
-        entries = bssids if bssids else [None]
+        entries: list[_WlanBssBlock | None] = list(net["bssids"]) if net["bssids"] else [None]
         for entry in entries:
             # BSSID 子块没写信道/频段时回退到网络级的值
             channel = net_ch
@@ -581,11 +629,8 @@ def parse_wlan_networks(text: str) -> ChannelOccupancy:
                     channel = entry["channel"]
                 if entry["band"] is not None:
                     band_text = entry["band"]
-            band = _band_of(
-                band_text if isinstance(band_text, str) else None,
-                channel if isinstance(channel, int) else None,
-            )
-            if band is None or not isinstance(channel, int):
+            band = _band_of(band_text, channel)
+            if band is None or channel is None:
                 continue
             per_band = by_band.setdefault(band, {})
             per_band[channel] = per_band.get(channel, 0) + 1

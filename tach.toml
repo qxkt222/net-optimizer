@@ -1,0 +1,151 @@
+# tach：固化模块依赖方向（对应 SPEC §4.2 的旧模块分层）
+#
+# 约定：`depends_on` 是**允许**依赖的完整清单，未列出的模块一律禁止。
+# 只登记当前已经存在的模块；新模块落地后在此补登记，避免引用不存在的
+# 路径导致 `tach check` 直接报错。
+
+source_roots = ["."]
+exclude = [
+    ".git",
+    "__pycache__",
+    ".venv",
+    ".ruff_cache",
+    ".pytest_cache",
+    "build",
+    "dist",
+]
+
+# 领域模型：最底层，不依赖包内任何模块（仅标准库）
+[[modules]]
+path = "netopt.models"
+depends_on = []
+
+# v2 领域契约（Report / Policy / codes）：只依赖标准库 + pydantic
+[[modules]]
+path = "netopt.domain"
+depends_on = []
+
+# 终端 UI 小工具：只做 ANSI 着色，不依赖包内任何模块
+[[modules]]
+path = "netopt.ui"
+depends_on = []
+
+# 平台层：子进程执行 / 控制台初始化，不依赖包内任何模块
+[[modules]]
+path = "netopt.platform"
+depends_on = []
+
+# 纯文本解析：只产出 models
+[[modules]]
+path = "netopt.parsers"
+depends_on = ["netopt.models"]
+
+# 探测层：调用平台命令并解析输出；v2 读探测改走 SystemApi
+[[modules]]
+path = "netopt.probes"
+depends_on = [
+    "netopt.domain",
+    "netopt.models",
+    "netopt.platform",
+    "netopt.parsers",
+    "netopt.system",
+]
+
+# 运行期状态（日志 / 历史）：无包内依赖
+[[modules]]
+path = "netopt.state"
+depends_on = []
+
+# 运行期目录解析：纯路径拼接，只依赖标准库
+[[modules]]
+path = "netopt.paths"
+depends_on = []
+
+# JSONL 历史读写：只依赖标准库，不依赖包内任何模块
+[[modules]]
+path = "netopt.history"
+depends_on = []
+
+# 配置层：读写 config.toml，依赖路径解析与领域阈值
+[[modules]]
+path = "netopt.config"
+depends_on = ["netopt.domain", "netopt.paths"]
+
+# 更新检查：只读查询 GitHub Releases，仅用包根的 __version__
+[[modules]]
+path = "netopt.update"
+depends_on = []
+
+# 系统访问层（v2）：SystemApi 接口 + ctypes 实现
+[[modules]]
+path = "netopt.system"
+depends_on = ["netopt.domain", "netopt.platform"]
+
+# 诊断命令：允许落到 UI 渲染
+[[modules]]
+path = "netopt.diag"
+depends_on = [
+    "netopt.models",
+    "netopt.platform",
+    "netopt.parsers",
+    "netopt.probes",
+    "netopt.state",
+    "netopt.ui",
+]
+
+# 修复命令：不解析原始文本，因此不依赖 parsers
+[[modules]]
+path = "netopt.fix"
+depends_on = [
+    "netopt.models",
+    "netopt.platform",
+    "netopt.probes",
+    "netopt.state",
+    "netopt.ui",
+]
+
+# 健康评分：同上
+[[modules]]
+path = "netopt.health"
+depends_on = [
+    "netopt.models",
+    "netopt.platform",
+    "netopt.probes",
+    "netopt.state",
+    "netopt.ui",
+]
+
+# 渲染层（v2）：只消费 Report，不探测、不做业务判断
+[[modules]]
+path = "netopt.render"
+depends_on = ["netopt.domain"]
+
+# 分析层（v2）：纯函数评分，不做 IO、不探测
+[[modules]]
+path = "netopt.analysis"
+depends_on = ["netopt.domain", "netopt.models"]
+
+# v2 命令层：只做探测 → Report / 计划 → 修复，不渲染、不打印
+[[modules]]
+path = "netopt.commands"
+depends_on = [
+    "netopt.analysis",
+    "netopt.domain",
+    "netopt.history",
+    "netopt.models",
+    "netopt.paths",
+    "netopt.platform",
+    "netopt.probes",
+    "netopt.system",
+]
+
+# v2 CLI：参数解析 + 命令分发 + 退出码
+[[modules]]
+path = "netopt.cli"
+depends_on = [
+    "netopt.commands",
+    "netopt.config",
+    "netopt.domain",
+    "netopt.render",
+    "netopt.update",
+]

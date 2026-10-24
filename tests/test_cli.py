@@ -14,7 +14,7 @@ import time
 import pytest
 
 import netoptimizer
-from netopt import diag, fix, health, platform, state
+from netopt import cli, diag, fix, health, platform, state
 
 #: BRIEF §2.4 冻结的 CLI 命令字面量，一个都不能少
 ALL_COMMANDS = [
@@ -29,11 +29,13 @@ ALL_COMMANDS = [
     "wifi",
     "fix",
     "monitor",
+    "watch",
     "dev",
     "health",
     "admin",
     "clear",
     "help",
+    "undo",
 ]
 
 
@@ -45,14 +47,15 @@ def dispatched(monkeypatch):
     def recorder(name):
         def _rec(*args, **kwargs):
             calls.append((name, args, kwargs))
+            return 0  # status 走 v2 CLI 时按返回值取退出码
 
         return _rec
 
     modules = (
+        (cli, ["main"]),
         (
             diag,
             [
-                "cmd_status",
                 "cmd_full",
                 "cmd_ping",
                 "cmd_dns",
@@ -98,7 +101,7 @@ def test_no_args_prints_help(capsys):
 
 def test_wait_flag_is_stripped_before_dispatch(dispatched, as_admin):
     netoptimizer.main(["status", "--wait"])
-    assert dispatched == [("diag.cmd_status", (), {})]
+    assert dispatched == [("cli.main", (["status"],), {})]
 
 
 def test_unknown_command_prints_hint(capsys):
@@ -114,29 +117,49 @@ def test_unknown_command_prints_hint(capsys):
 @pytest.mark.parametrize(
     ("argv", "expected"),
     [
-        (["status"], ("diag.cmd_status", (), {})),
-        (["full"], ("diag.cmd_full", (), {})),
-        (["auto"], ("fix.cmd_auto", (), {})),
-        (["ping"], ("diag.cmd_ping", (None,), {})),
-        (["ping", "1.1.1.1"], ("diag.cmd_ping", ("1.1.1.1",), {})),
-        (["dns"], ("diag.cmd_dns", (), {})),
-        (["http"], ("diag.cmd_http", (), {})),
-        (["speed"], ("diag.cmd_speed", (), {})),
-        (["trace"], ("diag.cmd_trace", (None,), {})),
-        (["trace", "8.8.8.8"], ("diag.cmd_trace", ("8.8.8.8",), {})),
-        (["wifi"], ("diag.cmd_wifi", (), {})),
-        (["health"], ("health.cmd_health", (), {})),
-        (["monitor"], ("diag.cmd_monitor", (60,), {})),
-        (["monitor", "10"], ("diag.cmd_monitor", (10,), {})),
-        (["monitor", "3"], ("diag.cmd_monitor", (5,), {})),  # 下限 5
-        (["monitor", "9999"], ("diag.cmd_monitor", (600,), {})),  # 上限 600
-        (["monitor", "abc"], ("diag.cmd_monitor", (60,), {})),  # 非数字 → 默认
-        (["fix"], ("fix.cmd_fix", ("all",), {"restore": False})),
-        (["fix", "dns"], ("fix.cmd_fix", ("dns",), {"restore": False})),
-        (["fix", "tcp"], ("fix.cmd_fix", ("tcp",), {"restore": False})),
-        (["fix", "power"], ("fix.cmd_fix", ("power",), {"restore": False})),
-        # 新增：fix dns --restore
-        (["fix", "dns", "--restore"], ("fix.cmd_fix", ("dns",), {"restore": True})),
+        # status / health / ping / dns / http / speed / trace / wifi / full
+        # 已切到 v2 CLI：兼容壳把整条 argv 转交 cli.main
+        (["status"], ("cli.main", (["status"],), {})),
+        (["health"], ("cli.main", (["health"],), {})),
+        (["full"], ("cli.main", (["full"],), {})),
+        (["ping"], ("cli.main", (["ping"],), {})),
+        (["ping", "1.1.1.1"], ("cli.main", (["ping", "1.1.1.1"],), {})),
+        (["dns"], ("cli.main", (["dns"],), {})),
+        (["http"], ("cli.main", (["http"],), {})),
+        (["speed"], ("cli.main", (["speed"],), {})),
+        (["trace"], ("cli.main", (["trace"],), {})),
+        (["trace", "8.8.8.8"], ("cli.main", (["trace", "8.8.8.8"],), {})),
+        (["wifi"], ("cli.main", (["wifi"],), {})),
+        # auto / monitor / watch 已迁移到 v2 CLI
+        (["auto"], ("cli.main", (["auto"],), {})),
+        (["auto", "--json"], ("cli.main", (["--json", "auto"],), {})),
+        (["monitor"], ("cli.main", (["monitor"],), {})),
+        (["monitor", "--count", "10"], ("cli.main", (["monitor", "--count", "10"],), {})),
+        (["watch"], ("cli.main", (["watch"],), {})),
+        (["watch", "--count", "2"], ("cli.main", (["watch", "--count", "2"],), {})),
+        (
+            ["watch", "--count", "2", "--json"],
+            ("cli.main", (["--json", "watch", "--count", "2"],), {}),
+        ),
+        # fix / undo 已切到 v2 CLI：兼容壳把整条 argv 转交 cli.main
+        (["fix"], ("cli.main", (["fix"],), {})),
+        (["fix", "dns"], ("cli.main", (["fix", "dns"],), {})),
+        (["fix", "tcp"], ("cli.main", (["fix", "tcp"],), {})),
+        (["fix", "power"], ("cli.main", (["fix", "power"],), {})),
+        (["fix", "dns", "--dry-run"], ("cli.main", (["fix", "dns", "--dry-run"],), {})),
+        (["fix", "dns", "--restore"], ("cli.main", (["fix", "dns", "--restore"],), {})),
+        (["undo"], ("cli.main", (["undo"],), {})),
+        (["undo", "last"], ("cli.main", (["undo", "last"],), {})),
+        (
+            ["undo", "20260101T000000000000-abcd"],
+            ("cli.main", (["undo", "20260101T000000000000-abcd"],), {}),
+        ),
+        # 全局 --json 会被提到命令之前（与 status 的兼容处理一致）
+        (["fix", "dns", "--json"], ("cli.main", (["--json", "fix", "dns"],), {})),
+        (["undo", "last", "--json"], ("cli.main", (["--json", "undo", "last"],), {})),
+        (["full", "--json"], ("cli.main", (["--json", "full"],), {})),
+        (["ping", "1.1.1.1", "--json"], ("cli.main", (["--json", "ping", "1.1.1.1"],), {})),
+        (["trace", "--json"], ("cli.main", (["--json", "trace"],), {})),
     ],
 )
 def test_command_dispatch(dispatched, as_admin, argv, expected):
@@ -147,7 +170,7 @@ def test_command_dispatch(dispatched, as_admin, argv, expected):
 # ---------------------------------------------------------------------------
 # 管理员提权（NEED_ADMIN）
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize("command", ["fix", "auto", "dev"])
+@pytest.mark.parametrize("command", ["dev"])
 def test_need_admin_commands_elevate_when_not_admin(dispatched, monkeypatch, capsys, command):
     elevated: list[list[str]] = []
     monkeypatch.setattr(platform, "is_admin", lambda: False)
@@ -165,17 +188,41 @@ def test_need_admin_keeps_original_arguments(dispatched, monkeypatch):
     monkeypatch.setattr(platform, "is_admin", lambda: False)
     monkeypatch.setattr(platform, "elevate", lambda args, **kw: elevated.append(list(args)) or True)
 
+    netoptimizer.main(["dev", "on"])
+
+    assert elevated == [["dev", "on", "--wait"]]
+    assert dispatched == []
+
+
+def test_fix_does_not_auto_elevate(dispatched, monkeypatch, capsys):
+    """fix 已转交 v2 CLI：非管理员不自动提权，由 CLI 提示并以 3 退出。"""
+    elevated: list[list[str]] = []
+    monkeypatch.setattr(platform, "is_admin", lambda: False)
+    monkeypatch.setattr(platform, "elevate", lambda args, **kw: elevated.append(list(args)) or True)
+
     netoptimizer.main(["fix", "dns", "--restore"])
 
-    assert elevated == [["fix", "dns", "--restore", "--wait"]]
-    assert dispatched == []
+    assert elevated == []
+    assert dispatched == [("cli.main", (["fix", "dns", "--restore"],), {})]
+
+
+def test_auto_does_not_auto_elevate(dispatched, monkeypatch):
+    """auto 已转交 v2 CLI：非管理员由 CLI 返回 3，兼容壳不自动提权。"""
+    elevated: list[list[str]] = []
+    monkeypatch.setattr(platform, "is_admin", lambda: False)
+    monkeypatch.setattr(platform, "elevate", lambda args, **kw: elevated.append(list(args)) or True)
+
+    netoptimizer.main(["auto"])
+
+    assert elevated == []
+    assert dispatched == [("cli.main", (["auto"],), {})]
 
 
 def test_elevate_cancelled_is_reported(dispatched, monkeypatch, capsys):
     monkeypatch.setattr(platform, "is_admin", lambda: False)
     monkeypatch.setattr(platform, "elevate", lambda args, **kw: False)
 
-    netoptimizer.main(["fix"])
+    netoptimizer.main(["dev"])
 
     assert "提权被取消" in capsys.readouterr().out
     assert dispatched == []
@@ -263,20 +310,21 @@ def test_clear_removes_state_but_keeps_dns_backup():
 # 异常处理
 # ---------------------------------------------------------------------------
 def test_command_exception_is_reported_and_swallowed(dispatched, as_admin, monkeypatch, capsys):
-    def boom():
+    def boom(argv):
         raise RuntimeError("炸了")
 
-    monkeypatch.setattr(diag, "cmd_status", boom)
+    monkeypatch.setattr(cli, "main", boom)
 
     assert netoptimizer.main(["status"]) == 0
     assert "出错: 炸了" in capsys.readouterr().out
 
 
 def test_keyboard_interrupt_is_reported(dispatched, as_admin, monkeypatch, capsys):
-    def interrupt():
+    def interrupt(argv):
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(diag, "cmd_full", interrupt)
+    # monitor 已迁移到 v2 CLI；这里用 status 验证兼容壳自己的异常边界。
+    monkeypatch.setattr(cli, "main", interrupt)
 
-    assert netoptimizer.main(["full"]) == 0
+    assert netoptimizer.main(["status"]) == 0
     assert "已中断" in capsys.readouterr().out

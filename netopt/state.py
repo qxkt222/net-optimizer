@@ -28,7 +28,7 @@ def log(msg: str) -> None:
         filename = BASE / f"log-{time.strftime('%Y-%m-%d')}.log"
         with open(filename, "a", encoding="utf-8") as f:
             f.write(f"[{ts}] {msg}\n")
-    except Exception:
+    except Exception:  # nosec B110 —— 日志写失败必须静默，不能拖垮命令
         pass
 
 
@@ -39,7 +39,7 @@ def hist_load() -> dict:
             data = json.load(f)
         if isinstance(data, dict):
             return data
-    except Exception:
+    except Exception:  # nosec B110 —— 历史文件损坏时按空历史处理，不抛给调用方
         pass
     return {"entries": []}
 
@@ -55,7 +55,7 @@ def hist_add(entry: dict) -> None:
         h["entries"] = h["entries"][-200:]
         with open(HISTORY_FILE, "w", encoding="utf-8") as f:
             json.dump(h, f, ensure_ascii=False, indent=1)
-    except Exception:
+    except Exception:  # nosec B110 —— 历史不是关键路径，写盘失败静默
         pass
 
 

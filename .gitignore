@@ -3,6 +3,21 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 
+# 虚拟环境与构建产物
+.venv/
+dist/
+build/
+*.egg-info/
+
+# 门禁产物（覆盖率 / 类型 / 属性测试缓存）
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.tach_cache/
+.hypothesis/
+tach_module_graph.dot
+
 # 运行期状态（用户数据，不入库）
 log-*.log
 history.json

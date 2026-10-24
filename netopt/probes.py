@@ -13,11 +13,16 @@ import random
 import socket
 import ssl
 import struct
+import threading
 import time
+from dataclasses import dataclass, field
 
 from netopt import parsers, platform
+from netopt.domain.models import Adapter, InterfaceDns, Route
+from netopt.domain.report import ProbeError
 from netopt.models import DnsConfig, Gateway, Interface, MtuResult, PingStat
 from netopt.platform import Runner
+from netopt.system.api import SystemApi
 
 # MTU 探测参数 ---------------------------------------------------------------
 _MTU_OVERHEAD = 28  # IPv4 头 20 + ICMP 头 8
@@ -62,7 +67,8 @@ def gateway(run: Runner | None = None) -> Gateway | None:
     虚拟网卡（缺陷 D1）；这里改用 ``route print -4`` 的活动路由段。
     """
     run = run if run is not None else platform.run
-    res = run(["route", "print", "-4", "0.0.0.0"])
+    # 0.0.0.0 是传给 route 的默认路由目标，不是监听地址（误报）
+    res = run(["route", "print", "-4", "0.0.0.0"])  # nosec B104
     if res.missing:
         return None
     return parsers.parse_route_default(res.out)
@@ -115,7 +121,8 @@ def dns_query(server: str, host: str, timeout: float = 3.0) -> float | None:
     不把端口上收到的无关 UDP 包当成有效应答。
     """
     try:
-        tid = random.randint(0, 0xFFFF)
+        # 只用作 DNS 事务 ID 的随机填充，与安全/密码学无关
+        tid = random.randint(0, 0xFFFF)  # nosec B311
         header = struct.pack(">HHHHHH", tid, 0x0100, 1, 0, 0, 0)
         question = (
             b"".join(bytes([len(p)]) + p.encode() for p in host.split("."))
@@ -259,3 +266,128 @@ def mtu(target: str = "223.5.5.5", run: Runner | None = None) -> MtuResult:
     if uncertain:
         verified = False
     return MtuResult(mtu=best + _MTU_OVERHEAD, payload=best, verified=verified)
+
+
+# ===========================================================================
+# v2 探测上下文
+# ===========================================================================
+@dataclass
+class ProbeContext:
+    """一次探测运行的共享上下文：总预算、取消信号与错误收集。
+
+    ``deadline`` 是 ``time.monotonic()`` 的绝对时刻，不是剩余秒数；这样多个
+    探测并行时都以同一个起点计算预算，不会被各自的启动时间稀释。
+
+    线程安全：多个探测可能并行写 ``errors``，:meth:`record_error` 内部加锁，
+    保证并发记录不丢；其余字段只读，可无锁访问。
+
+    不抛异常：预算耗尽只体现在 :meth:`remaining` / :meth:`expired` 上，
+    由调用方决定是否跳过后续探测，错误一律走 :meth:`record_error` 记录。
+    """
+
+    deadline: float
+    cancel: threading.Event
+    errors: list[ProbeError]
+    started: float
+    # 仅用于串行化 errors 的追加；不参与相等性比较与 repr
+    _lock: threading.Lock = field(
+        default_factory=threading.Lock, init=False, repr=False, compare=False
+    )
+
+    @classmethod
+    def with_budget(cls, seconds: float) -> ProbeContext:
+        """按给定预算（秒）创建上下文；负预算按 0 处理，等价于立即到期。"""
+        started = time.monotonic()
+        return cls(
+            deadline=started + max(0.0, seconds),
+            cancel=threading.Event(),
+            errors=[],
+            started=started,
+        )
+
+    def remaining(self) -> float:
+        """剩余预算（秒），永不为负。"""
+        return max(0.0, self.deadline - time.monotonic())
+
+    def expired(self) -> bool:
+        """预算是否已耗尽。"""
+        return self.remaining() <= 0.0
+
+    def cancelled(self) -> bool:
+        """用户是否已请求取消。"""
+        return self.cancel.is_set()
+
+    def record_error(
+        self,
+        code: str,
+        source: str,
+        message: str,
+        *,
+        retryable: bool = False,
+    ) -> None:
+        """记录一条探测失败；``code`` 取 :class:`ProbeErrorCode` 的常量值。
+
+        加锁追加，避免并行探测互相覆盖；本方法不抛异常。
+        """
+        error = ProbeError(code=code, source=source, message=message, retryable=retryable)
+        with self._lock:
+            self.errors.append(error)
+
+    def timeout_for(self, requested: float) -> float:
+        """把单个探测的期望超时收敛到剩余预算内，避免越过总 deadline。"""
+        return min(requested, self.remaining())
+
+
+# ===========================================================================
+# 基于 SystemApi 的读探测（v2）
+# ===========================================================================
+def adapters_from_api(api: SystemApi) -> list[Adapter]:
+    """读取全部适配器（含虚拟网卡与环回），不做过滤。
+
+    读失败时 ``api`` 会抛 :class:`netopt.system.api.SystemUnavailable`；
+    本函数刻意不捕获，由持有 :class:`ProbeContext` 的上层统一记成 ``ProbeError``。
+    """
+    return api.adapters()
+
+
+def gateway_from_api(api: SystemApi) -> Route | None:
+    """返回 metric 最小的默认路由；没有默认路由时返回 ``None``。
+
+    同时考虑 IPv4（``0.0.0.0/0``）与 IPv6（``::/0``）默认路由：metric 最小者
+    就是 Windows 实际选用的那条。metric 相同时保留路由表顺序中的第一条。
+    """
+    defaults = [route for route in api.routes() if route.is_default]
+    if not defaults:
+        return None
+    return min(defaults, key=lambda route: route.metric)
+
+
+def primary_adapters_from_api(api: SystemApi) -> list[Adapter]:
+    """承载默认路由、且适合配置 DNS 的适配器。
+
+    必须同时满足三个条件（缺陷 D11 的修复点）：
+
+    1. ``adapter.connected``：未连接的不算；
+    2. ``adapter.is_primary``：VPN / 虚拟交换机 / 环回一律排除；
+    3. ``adapter.index`` 等于默认路由的 ``interface_index``。
+
+    即使 VPN 或 ``vEthernet`` 持有默认路由，这里也会返回空列表 —— 由上层
+    提示“当前默认路由在非本地接口上”，绝不把 DNS 改到它们身上。
+    """
+    gateway = gateway_from_api(api)
+    if gateway is None:
+        return []
+    return [
+        adapter
+        for adapter in api.adapters()
+        if adapter.connected and adapter.is_primary and adapter.index == gateway.interface_index
+    ]
+
+
+def dns_from_api(api: SystemApi) -> list[InterfaceDns]:
+    """原样返回系统访问层读到的 DNS 配置。
+
+    这里不做任何过滤（例如剔除 IPv6 或空配置）：哪些接口该展示、该修改，
+    是上层命令的职责，探测层只负责如实搬运。
+    """
+    return api.dns_servers()
