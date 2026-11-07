@@ -6,6 +6,10 @@ on:
     branches: [main, rewrite/v2]
   pull_request:
     branches: [main, rewrite/v2]
+  # 代码没变也每天跑一次，抓上游依赖/环境漂移——push CI 抓不到这类问题。
+  # UTC 20:00 = 北京次日 04:00。
+  schedule:
+    - cron: "0 20 * * *"
 
 permissions:
   contents: read
